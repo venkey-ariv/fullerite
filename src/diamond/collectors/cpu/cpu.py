@@ -198,32 +198,33 @@ class CPUCollector(diamond.collector.Collector):
             cpu_count = len(cpu_time)
             total_time = psutil.cpu_times()
 
-            for i in range(0, len(cpu_time)):
-                metric_name = 'cpu'
+            if not str_to_bool(self.config['simple']):
+                for i in range(0, len(cpu_time)):
+                    metric_name = 'cpu'
 
-                self.dimensions = {
-                    'core': str(i),
-                }
-                self.publish_cumulative_counter(metric_name + '.user',
-                                             cpu_time[i].user)
-                if hasattr(cpu_time[i], 'nice'):
                     self.dimensions = {
                         'core': str(i),
                     }
-                    self.publish_cumulative_counter(metric_name + '.nice',
-                                                 cpu_time[i].nice)
+                    self.publish_cumulative_counter(metric_name + '.user',
+                                                 cpu_time[i].user)
+                    if hasattr(cpu_time[i], 'nice'):
+                        self.dimensions = {
+                            'core': str(i),
+                        }
+                        self.publish_cumulative_counter(metric_name + '.nice',
+                                                     cpu_time[i].nice)
 
-                self.dimensions = {
-                    'core': str(i),
-                }
-                self.publish_cumulative_counter(metric_name + '.system',
-                                             cpu_time[i].system)
+                    self.dimensions = {
+                        'core': str(i),
+                    }
+                    self.publish_cumulative_counter(metric_name + '.system',
+                                                 cpu_time[i].system)
 
-                self.dimensions = {
-                    'core': str(i),
-                }
-                self.publish_cumulative_counter(metric_name + '.idle',
-                                             cpu_time[i].idle)
+                    self.dimensions = {
+                        'core': str(i),
+                    }
+                    self.publish_cumulative_counter(metric_name + '.idle',
+                                                 cpu_time[i].idle)
 
             metric_name = 'cpu.total'
             self.publish_cumulative_counter(metric_name + '.user',
