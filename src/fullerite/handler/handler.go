@@ -134,6 +134,14 @@ type BaseHandler struct {
 	maxIdleConnectionsPerHost int
 	keepAliveInterval         int
 
+	// Emission Timings are passed onto this channel
+	emissionTimingChannel chan emissionTiming
+	// When set to true,
+	// the handler implementation should explicitly
+	// report emissionMetrics stats by calling
+	// base.reportEmissionMetrics
+	useCustomEmissionMetricsReporter bool
+
 	// for tracking
 	emissionTimes  list.List
 	totalEmissions uint64
@@ -147,6 +155,7 @@ type BaseHandler struct {
 	// List of whitelisted collectors
 	// the handler will accept metrics from
 	whiteListedCollectors map[string]bool
+
 }
 
 // SetMaxBufferSize : set the buffer size
@@ -189,6 +198,11 @@ func (base *BaseHandler) SetCollectorEndpoints(c map[string]CollectorEnd) {
 	for name, colInfo := range c {
 		base.collectorEndpoints[name] = colInfo
 	}
+}
+
+// OverrideBaseEmissionMetricsReporter : Do not report emissionTiming metrics in the base handler
+func (base *BaseHandler) OverrideBaseEmissionMetricsReporter () {
+	base.useCustomEmissionMetricsReporter = true
 }
 
 // Name : the name of the handler
@@ -415,21 +429,22 @@ func (base *BaseHandler) configureCommonParams(configMap map[string]interface{})
 }
 
 func (base *BaseHandler) run(emitFunc func([]metric.Metric) bool) {
-	emissionResults := make(chan emissionTiming)
-	go base.recordEmissions(emissionResults)
+	// Initiliaze channel and start listening to
+	// emissionTimings on the same
+	base.emissionTimingChannel := make(chan emissionTiming)
+	go base.recordEmissions()
 
 	defaultCollectorEnd := CollectorEnd{base.Channel(), base.MaxBufferSize()}
 
-	go base.listenForMetrics(emitFunc, defaultCollectorEnd, emissionResults, "")
+	go base.listenForMetrics(emitFunc, defaultCollectorEnd, "")
 	for k := range base.CollectorEndpoints() {
-		go base.listenForMetrics(emitFunc, base.CollectorEndpoints()[k], emissionResults, k)
+		go base.listenForMetrics(emitFunc, base.CollectorEndpoints()[k], k)
 	}
 }
 
 func (base *BaseHandler) listenForMetrics(
 	emitFunc func([]metric.Metric) bool,
 	collectorEnd CollectorEnd,
-	emissionResults chan<- emissionTiming,
 	collectorName string) {
 
 	metrics := make([]metric.Metric, 0, collectorEnd.BufferSize)
@@ -439,7 +454,7 @@ func (base *BaseHandler) listenForMetrics(
 	flusher := ticker.C
 
 	flushFunction := func() {
-		go base.emitAndTime(metrics, emitFunc, emissionResults)
+		go base.emitAndTime(metrics, emitFunc)
 
 		// will get copied into this call, meaning it's ok to clear it
 		metrics = make([]metric.Metric, 0, collectorEnd.BufferSize)
@@ -485,8 +500,8 @@ stopReading:
 // manages the rolling window of emissions
 // the emissions are a timesorted list, and we purge things older than
 // the base handler's interval
-func (base *BaseHandler) recordEmissions(timingsChannel <-chan emissionTiming) {
-	for timing := range timingsChannel {
+func (base *BaseHandler) recordEmissions() {
+	for timing := range base.emissionTimingChannel {
 		atomic.AddUint64(&base.totalEmissions, 1)
 		now := time.Now()
 
@@ -509,15 +524,7 @@ func (base *BaseHandler) recordEmissions(timingsChannel <-chan emissionTiming) {
 	}
 }
 
-func (base *BaseHandler) emitAndTime(
-	metrics []metric.Metric,
-	emitFunc func([]metric.Metric) bool,
-	callbackChannel chan<- emissionTiming,
-) {
-	numMetrics := len(metrics)
-	beforeEmission := time.Now()
-	result := emitFunc(metrics)
-	afterEmission := time.Now()
+func (base *BaseHandler) reportEmissionMetrics(emissionResult bool, timing emissionTiming) {
 
 	emissionDuration := afterEmission.Sub(beforeEmission)
 	timing := emissionTiming{
@@ -537,6 +544,21 @@ func (base *BaseHandler) emitAndTime(
 		)
 		atomic.AddUint64(&base.metricsSent, uint64(numMetrics))
 	} else {
-		atomic.AddUint64(&base.metricsDropped, uint64(numMetrics))
+		atomic.AddUint64(&base.metricsDropped, uint64(timing.metricsSent))
+	}
+}
+
+func (base *BaseHandler) emitAndTime( metrics []metric.Metric, emitFunc func([]metric.Metric) bool)
+{
+	start := time.Now()
+	result := emitFunc(metrics)
+	elapsed := time.Since(start)
+	if !base.useCustomEmissionMetricsReporter {
+		timing := emissionTiming {
+			timestamp:   time.Now(),
+			duration:    elapsed,
+			metricsSent: len(metrics),
+		}
+		base.reportEmissionMetrics(result, timing)
 	}
 }
