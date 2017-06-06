@@ -21,6 +21,14 @@ type SignalFx struct {
 	endpoint   string
 	authToken  string
 	httpClient *util.HTTPAlive
+
+	// If the following dimension exists,
+	// then batch and emit it separately to Sfx
+	batchByDimension string
+
+	// When emitting batches made from "batchByDimension"
+    // config, use the following auth token
+	perBatchAuthToken map[string]string
 }
 
 var allowedNamePuncts = []rune{}
@@ -61,6 +69,23 @@ func (s *SignalFx) Configure(configMap map[string]interface{}) {
 		s.log.Error("There was no endpoint specified for the SignalFx Handler, there won't be any emissions")
 	}
 
+	if batchByDimension, exists := configMap["batchByDimension"]; exists {
+		s.batchByDimension = batchByDimension.(string)
+		s.log.Info("Batching metrics by dimension: ", s.batchByDimension)
+
+		// Checking if authtoken for batches are specified
+		if perBatchAuthToken, exists := configMap["perBatchAuthToken"]; exists {
+			s.perBatchAuthToken = config.GetAsMap(perBatchAuthToken)
+			s.log.Info("Loaded authkeys for batches")
+		} else {
+			s.log.Info("Using default authToken for all batches")
+		}
+
+		// Use custom emission time reporting when
+		// employing any fancy batching mechanism
+		s.OverrideBaseEmissionMetricsReporter()
+	}
+
 	s.configureCommonParams(configMap)
 }
 
@@ -78,6 +103,14 @@ func (s *SignalFx) Run() {
 	s.httpClient = httpAliveClient
 
 	s.run(s.emitMetrics)
+}
+
+func signalFxValueSanitize(value string) string {
+	return util.StrSanitize(value, true, allowedNamePuncts)
+}
+
+func signalFxKeySanitize(key string) string {
+	return util.StrSanitize(key, false, allowedDimKeyPuncts)
 }
 
 func (s SignalFx) convertToProto(incomingMetric metric.Metric) *DataPoint {
@@ -130,7 +163,26 @@ func (s SignalFx) getSanitizedDimensions(incomingMetric metric.Metric) map[strin
 	return dimSanitized
 }
 
-func (s *SignalFx) emitMetrics(metrics []metric.Metric) bool {
+// getAuthTokenForBatch will return an AuthToken associated with a batchname
+// if no such batch name exists, the default auth token will be returned.
+func (s *SignalFx) getAuthTokenForBatch(batchName string) string {
+	if authToken, exists := perBatchAuthToken[batchName]; exists {
+		return authToken
+	} else {
+		return s.authToken
+	}
+}
+
+func (s *SignalFx)  makeBatches(metrics []metric.Metric) map[string][]metric.Metric {
+	m := make(map[string][]metric.Metric)
+	for _, metric := range metrics {
+		dimValue := metric.Dimensions[s.batchByDimension]
+		m[dimValue] = append(m[dimValue], metric)
+	}
+	return m
+}
+
+func (s *SignalFx) emitBatch(batchName string, metrics []metric.Metric) bool {
 	s.log.Info("Starting to emit ", len(metrics), " metrics")
 
 	if len(metrics) == 0 {
@@ -146,7 +198,10 @@ func (s *SignalFx) emitMetrics(metrics []metric.Metric) bool {
 	payload := new(DataPointUploadMessage)
 	payload.Datapoints = datapoints
 
-	if s.authToken == "" || s.endpoint == "" {
+	// Get auth token to be used for batch
+	authToken := s.getAuthTokenForBatch(batchName)
+
+	if authToken == "" || s.endpoint == "" {
 		s.log.Warn("Skipping emission because we're missing the auth token ",
 			"or the endpoint, payload would have been ", payload)
 		return false
@@ -158,7 +213,7 @@ func (s *SignalFx) emitMetrics(metrics []metric.Metric) bool {
 	}
 
 	customHeader := map[string]string{
-		"X-SF-TOKEN":   s.authToken,
+		"X-SF-TOKEN":   authToken,
 		"Content-Type": "application/x-protobuf",
 	}
 
@@ -186,10 +241,27 @@ func (s *SignalFx) emitMetrics(metrics []metric.Metric) bool {
 	return true
 }
 
-func signalFxValueSanitize(value string) string {
-	return util.StrSanitize(value, true, allowedNamePuncts)
-}
+func (s *SignalFx)emitMetrics(metrics []metric.Metric) bool {
 
-func signalFxKeySanitize(key string) string {
-	return util.StrSanitize(key, false, allowedDimKeyPuncts)
+	if len(metrics) == 0 {
+		s.log.Warn("Skipping send because of an empty payload")
+		return false
+	}
+
+	if s.batchByDimension == "" {
+		return s.emitBatch("", metrics)
+	} else {
+		for batchName, metricBatch := range s.makeBatches(metrics) {
+			start := time.Now()
+			emissionResult := s.emitBatch(batchName, metricBatch)
+			elapsed := time.Since(start)
+			timing := emissionTiming {
+				timestamp:   time.Now(),
+				duration:    elapsed,
+				metricsSent: len(metrics),
+			}
+			s.reportEmissionMetrics(emissionResult, timing)
+		}
+		return true
+	}
 }

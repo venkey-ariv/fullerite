@@ -47,7 +47,18 @@
             "max_buffer_size": 300,
             "timeout": 2,
             "maxIdleConnectionsPerHost": 2,
-            "keepAliveInterval": 30
+            "keepAliveInterval": 30,
+
+            // If the following dimension exists,
+            // then batch and emit it separately to Sfx
+            "batchByDimension": "service",
+
+            // When emitting batches made from "batchByDimension"
+            // config, use the following auth token
+            "perBatchAuthToken": {
+              "serviceA": "secret_token_A",
+              "serviceB": "secret_token_B",
+            }
         },
         "Datadog": {
             "apiKey": "secret_key",
