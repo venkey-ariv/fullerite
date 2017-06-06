@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fullerite/config"
 	"fullerite/metric"
 	"fullerite/util"
 
@@ -27,7 +28,7 @@ type SignalFx struct {
 	batchByDimension string
 
 	// When emitting batches made from "batchByDimension"
-    // config, use the following auth token
+	// config, use the following auth token
 	perBatchAuthToken map[string]string
 }
 
@@ -166,14 +167,14 @@ func (s SignalFx) getSanitizedDimensions(incomingMetric metric.Metric) map[strin
 // getAuthTokenForBatch will return an AuthToken associated with a batchname
 // if no such batch name exists, the default auth token will be returned.
 func (s *SignalFx) getAuthTokenForBatch(batchName string) string {
-	if authToken, exists := perBatchAuthToken[batchName]; exists {
+	if authToken, exists := s.perBatchAuthToken[batchName]; exists {
 		return authToken
-	} else {
-		return s.authToken
 	}
+
+	return s.authToken
 }
 
-func (s *SignalFx)  makeBatches(metrics []metric.Metric) map[string][]metric.Metric {
+func (s *SignalFx) makeBatches(metrics []metric.Metric) map[string][]metric.Metric {
 	m := make(map[string][]metric.Metric)
 	for _, metric := range metrics {
 		dimValue := metric.Dimensions[s.batchByDimension]
@@ -241,7 +242,7 @@ func (s *SignalFx) emitBatch(batchName string, metrics []metric.Metric) bool {
 	return true
 }
 
-func (s *SignalFx)emitMetrics(metrics []metric.Metric) bool {
+func (s *SignalFx) emitMetrics(metrics []metric.Metric) bool {
 
 	if len(metrics) == 0 {
 		s.log.Warn("Skipping send because of an empty payload")
@@ -250,18 +251,18 @@ func (s *SignalFx)emitMetrics(metrics []metric.Metric) bool {
 
 	if s.batchByDimension == "" {
 		return s.emitBatch("", metrics)
-	} else {
-		for batchName, metricBatch := range s.makeBatches(metrics) {
-			start := time.Now()
-			emissionResult := s.emitBatch(batchName, metricBatch)
-			elapsed := time.Since(start)
-			timing := emissionTiming {
-				timestamp:   time.Now(),
-				duration:    elapsed,
-				metricsSent: len(metrics),
-			}
-			s.reportEmissionMetrics(emissionResult, timing)
-		}
-		return true
 	}
+
+	for batchName, metricBatch := range s.makeBatches(metrics) {
+		start := time.Now()
+		emissionResult := s.emitBatch(batchName, metricBatch)
+		elapsed := time.Since(start)
+		timing := emissionTiming{
+			timestamp:   time.Now(),
+			duration:    elapsed,
+			metricsSent: len(metrics),
+		}
+		s.reportEmissionMetrics(emissionResult, timing)
+	}
+	return true
 }
