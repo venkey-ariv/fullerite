@@ -96,19 +96,20 @@ func TestCommonKeepAliveConfig(t *testing.T) {
 func TestEmissionAndRecord(t *testing.T) {
 	emitCalled := false
 
-	callbackChannel := make(chan emissionTiming)
 	emitFunc := func([]metric.Metric) bool {
 		emitCalled = true
 		return true
 	}
 	metrics := []metric.Metric{metric.New("example")}
 
-	base := BaseHandler{}
+	base := BaseHandler{
+		emissionTimingChannel: make(chan emissionTiming),
+	}
 	base.log = l.WithField("testing", "basehandler_emit")
-	go base.emitAndTime(metrics, emitFunc, callbackChannel)
+	go base.emitAndTime(metrics, emitFunc)
 
 	select {
-	case timing := <-callbackChannel:
+	case timing := <-base.emissionTimingChannel:
 		assert.NotNil(t, timing)
 		assert.Equal(t, 1, timing.metricsSent)
 		assert.NotNil(t, timing.timestamp)
@@ -118,11 +119,13 @@ func TestEmissionAndRecord(t *testing.T) {
 	}
 
 	assert.True(t, emitCalled)
-	callbackChannel = nil
+	base.emissionTimingChannel = nil
 }
 
 func TestRecordTimings(t *testing.T) {
-	base := BaseHandler{}
+	base := BaseHandler{
+		emissionTimingChannel: make(chan emissionTiming),
+	}
 	base.log = l.WithField("testing", "basehandler_record")
 	base.interval = 2
 
@@ -132,18 +135,17 @@ func TestRecordTimings(t *testing.T) {
 	now := time.Now()
 
 	// create a list of emissions in order with some older than 1 second
-	timingsChannel := make(chan emissionTiming)
 	base.emissionTimes.PushBack(emissionTiming{now.Add(minusSixSec), someDur, 0})
 	base.emissionTimes.PushBack(emissionTiming{now.Add(minusFiveSec), someDur, 0})
 
 	go func() {
-		timingsChannel <- emissionTiming{now, someDur, 0}
-		close(timingsChannel)
+		base.emissionTimingChannel <- emissionTiming{now, someDur, 0}
+		close(base.emissionTimingChannel)
 	}()
 
-	base.recordEmissions(timingsChannel)
+	base.recordEmissions()
 	assert.Equal(t, 1, base.emissionTimes.Len())
-	timingsChannel = nil
+	base.emissionTimingChannel = nil
 }
 
 func TestHandlerRunFlushInterval(t *testing.T) {
